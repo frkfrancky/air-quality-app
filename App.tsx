@@ -10,6 +10,7 @@ import MapScreen from './src/screens/MapScreen';
 import StatsScreen from './src/screens/StatsScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import ArduinoScreen from './src/screens/ArduinoScreen';
+import CityScreen from './src/screens/CityScreen';
 import { Colors } from './src/theme';
 
 const Tab = createBottomTabNavigator();
@@ -27,6 +28,7 @@ export default function App() {
               Carte: ['map', 'map-outline'],
               Statistiques: ['bar-chart', 'bar-chart-outline'],
               Arduino: ['hardware-chip', 'hardware-chip-outline'],
+              Ville: ['business', 'business-outline'],
               Paramètres: ['settings', 'settings-outline'],
             };
             const [active, inactive] = icons[route.name] ?? ['help', 'help-outline'];
@@ -53,6 +55,7 @@ export default function App() {
         {/* <Tab.Screen name="Carte" component={MapScreen} /> */}
         {/* <Tab.Screen name="Statistiques" component={StatsScreen} /> */}
         <Tab.Screen name="Arduino" component={ArduinoScreen} />
+        <Tab.Screen name="Ville" component={CityScreen} />
         <Tab.Screen name="Paramètres" component={SettingsScreen} />
       </Tab.Navigator>
     </NavigationContainer>

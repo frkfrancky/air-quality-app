@@ -199,8 +199,8 @@ export default function SettingsScreen() {
         </View>
 
         <View style={styles.footer}>
-          <Text style={styles.footerText}>Données fournies par les réseaux de surveillance</Text>
-          <Text style={styles.footerText}>de la qualité de l'air (AASQA)</Text>
+          <Text style={styles.footerText}>..</Text>
+          <Text style={styles.footerText}>..</Text>
         </View>
       </ScrollView>
     </SafeAreaView>

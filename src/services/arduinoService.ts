@@ -1,6 +1,6 @@
 import { ArduinoData } from '../types';
 
-export const DEFAULT_ARDUINO_IP = '10.19.128.179';
+export const DEFAULT_ARDUINO_IP = '10.100.96.179';
 export const DEFAULT_ARDUINO_PORT = 80;
 export const ARDUINO_TIMEOUT_MS = 5000;
 

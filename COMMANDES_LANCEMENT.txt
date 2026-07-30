@@ -1,0 +1,84 @@
+================================================================================
+                    COMMANDES DE LANCEMENT - Air Quality App
+================================================================================
+
+AVANT DE COMMENCER:
+- Assurez-vous que Node.js et npm/yarn sont installés
+- Installez les dépendances: npm install (ou yarn install)
+
+================================================================================
+                              LANCER L'APPLICATION
+================================================================================
+
+1. LANCER SUR WEB:
+   npm run web
+
+   La page s'ouvrira automatiquement dans votre navigateur
+   URL par défaut: http://localhost:8081
+
+2. LANCER SUR ANDROID:
+   npm run android
+
+   Prérequis:
+   - Android Studio installé
+   - Emulateur Android lancé (ou appareil connecté via USB)
+   - Variables d'environnement ANDROID_HOME configurées
+
+3. LANCER SUR iOS:
+   npm run ios
+
+   Prérequis:
+   - macOS requis
+   - Xcode installé
+   - Simulateur iOS disponible
+
+================================================================================
+                          AUTRES COMMANDES UTILES
+================================================================================
+
+Lancer en mode interactif (choix du platform):
+   npm start
+
+Lancer sur Android via CLI Expo:
+   expo start --android
+
+Lancer sur iOS via CLI Expo:
+   expo start --ios
+
+Lancer sur Web via CLI Expo:
+   expo start --web
+
+Vérifier la configuration du projet:
+   npx expo doctor
+
+Prévisualiser l'app avec Expo Go (sur un appareil réel):
+   npm start
+   (Scannez le QR code avec Expo Go app)
+
+================================================================================
+                        CONFIGURATION DU PROJET
+================================================================================
+
+Nom de l'app: air-quality-app
+Package Android: com.frkfr.airqualityapp
+Version: 1.0.0
+
+Fichiers de configuration:
+- app.json - Configuration Expo générale
+- package.json - Dépendances et scripts npm
+- eas.json - Configuration EAS Build (si présent)
+
+================================================================================
+                        NOTES IMPORTANTES
+================================================================================
+
+- Le projet utilise Expo SDK 54
+- React Native version 0.81.5
+- React 19.1.0
+- TypeScript est configuré
+
+Pour plus d'informations:
+- Documentation Expo: https://docs.expo.dev
+- Documentation React Native: https://reactnative.dev
+
+================================================================================
