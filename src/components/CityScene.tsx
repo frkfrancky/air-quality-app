@@ -2,28 +2,50 @@ import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import { View, Text, StyleSheet, LayoutChangeEvent, Animated, Easing } from 'react-native';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
-import Svg, { Defs, LinearGradient, RadialGradient, Stop, Rect, Circle } from 'react-native-svg';
-import * as Location from 'expo-location';
+import Svg, { Defs, LinearGradient, RadialGradient, Stop, Rect, Circle, Polygon } from 'react-native-svg';
 import CityPng from '../../assets/images/city.png';
+import NaturePng from '../../assets/images/nature.png';
 import Car1Png from '../../assets/images/car1.png';
 import Car2Png from '../../assets/images/car2.png';
 import Car3Png from '../../assets/images/car3.png';
 import Car4Png from '../../assets/images/car4.png';
 import { Colors } from '../theme';
 import { getAQILevel } from '../data/mockData';
+import { useCurrentCoords, Coords } from '../hooks/useCurrentCoords';
+import { findNearestCityName } from '../services/offlineGeocoding';
+import { getBiome } from '../services/biome';
 
 // Les images sont dessinées orientées vers la gauche.
 const CAR_IMAGES = [Car1Png, Car2Png, Car3Png, Car4Png];
+// Ratio du pavé dans lequel chaque image est affichée (contentFit="contain"), pas celui du PNG
+// lui-même : les 4 images n'ont pas toutes le même ratio, ce pavé sert juste de cadre commun.
+const CAR_ASPECT_RATIO = 240 / 156;
+// Nombre de voitures affichées à intensité de trafic maximale.
+const MAX_CARS = 8;
 
 // L'illustration était à l'origine un SVG vectoriel (275 dégradés, >1 Mo) très coûteux à peindre
 // pour le navigateur, même sans re-rendu React — d'où le PNG pré-rendu (city.png), bien plus léger.
 const CITY_ASPECT_RATIO = 1126 / 392;
 
-// Données statiques provisoires : seront remplacées par des appels API dédiés à chaque paramètre.
-const STATIC_DATA = {
+export type WeatherCondition = 'sunny' | 'cloudy' | 'rainy' | 'snowy';
+
+export interface CityIntensity {
+  aqi: number;
+  pm25: number;
+  pm10: number;
+  traffic: number;
+  ozone: number;
+  weather: WeatherCondition;
+}
+
+// Données provisoires : seront remplacées par des appels API dédiés à chaque paramètre.
+export const DEFAULT_CITY_INTENSITY: CityIntensity = {
   aqi: 78,
   pm25: 22,
   pm10: 38,
+  traffic: 60,
+  ozone: 90,
+  weather: 'rainy',
 };
 
 export interface CityLayers {
@@ -49,6 +71,12 @@ interface CitySceneProps {
   testTime?: Date;
   /** Paramètres visuels de pollution/météo à afficher sur la scène. */
   layers?: CityLayers;
+  /** Niveau d'intensité de chaque paramètre (valeur, densité, ou type de météo). */
+  intensity?: CityIntensity;
+  /** Impose un lieu (ex. choisi sur la carte) au lieu de la géolocalisation réelle de l'appareil. */
+  locationOverride?: Coords;
+  /** Décalage UTC du lieu affiché, en minutes, pour que l'heure/le ciel suivent son fuseau horaire. */
+  locationTimezoneOffsetMinutes?: number;
 }
 
 // --- Cycle jour / nuit -------------------------------------------------
@@ -212,12 +240,42 @@ function FloatingParticle({ index, size, color, sceneWidth, sceneHeight, clock, 
   );
 }
 
-// --- Pluie ------------------------------------------------------------------
+// --- Précipitations (pluie / neige) ------------------------------------------
 
-function RainDrop({ left, sceneHeight, clock, phase }: { left: number; sceneHeight: number; clock: Animated.Value; phase: number }) {
+function Precipitation({
+  left,
+  sceneHeight,
+  clock,
+  phase,
+  variant,
+}: {
+  left: number;
+  sceneHeight: number;
+  clock: Animated.Value;
+  phase: number;
+  variant: 'rain' | 'snow';
+}) {
   const progress = useMemo(() => Animated.modulo(Animated.add(clock, phase), 1), [clock, phase]);
   const translateY = progress.interpolate({ inputRange: [0, 1], outputRange: [-20, sceneHeight + 20] });
-  const opacity = progress.interpolate({ inputRange: [0, 0.1, 0.9, 1], outputRange: [0, 0.7, 0.7, 0] });
+  const opacity = progress.interpolate({ inputRange: [0, 0.1, 0.9, 1], outputRange: [0, 0.8, 0.8, 0] });
+
+  if (variant === 'snow') {
+    return (
+      <Animated.View
+        style={{
+          position: 'absolute',
+          left,
+          top: 0,
+          width: 6,
+          height: 6,
+          borderRadius: 3,
+          backgroundColor: 'rgba(255, 255, 255, 0.9)',
+          opacity,
+          transform: [{ translateY }],
+        }}
+      />
+    );
+  }
 
   return (
     <Animated.View
@@ -270,6 +328,8 @@ function DrivingCar({
   delay,
   reverse,
   source,
+  carWidth,
+  carHeight,
 }: {
   trackWidth: number;
   top: number;
@@ -277,6 +337,8 @@ function DrivingCar({
   delay: number;
   reverse: boolean;
   source: number;
+  carWidth: number;
+  carHeight: number;
 }) {
   const progress = useLoopProgress(duration, delay);
   const puff = useLoopProgress(700, 0);
@@ -285,24 +347,37 @@ function DrivingCar({
     inputRange: [0, 1],
     outputRange: reverse ? [trackWidth + 30, -30] : [-30, trackWidth + 30],
   });
-  const smokeOpacity = puff.interpolate({ inputRange: [0, 1], outputRange: [0.5, 0] });
-  const smokeScale = puff.interpolate({ inputRange: [0, 1], outputRange: [0.4, 1.6] });
+  const smokeOpacity = puff.interpolate({ inputRange: [0, 1], outputRange: [0.95, 0] });
+  const smokeScale = puff.interpolate({ inputRange: [0, 1], outputRange: [0.5, 1.8] });
+
+  // La voiture est calée en bas de sa boîte (contentPosition="bottom"), donc la fumée se positionne
+  // aussi depuis le bas (près du pot d'échappement), pas depuis le haut de la boîte.
+  const smokeSize = carHeight * 0.16;
+  const smokeBottom = carHeight * 0.06;
+  const smokeOffset = -(carHeight * 0.04);
 
   return (
-    <Animated.View style={{ position: 'absolute', top, transform: [{ translateX }] }}>
+    // `top` désigne la ligne de route : on remonte le pavé de la hauteur de la voiture pour que
+    // ce soit son bas (les roues), et non son coin haut-gauche, qui repose sur cette ligne.
+    <Animated.View style={{ position: 'absolute', top: top - carHeight, transform: [{ translateX }] }}>
       {/* Les images sont dessinées orientées vers la gauche : miroir uniquement pour celles qui vont vers la droite. */}
-      <View style={{ width: 240, height: 156, transform: [{ scaleX: reverse ? 1 : -1 }] }}>
-        <Image source={source} style={{ width: '100%', height: '100%' }} contentFit="contain" />
+      <View style={{ width: carWidth, height: carHeight, transform: [{ scaleX: reverse ? 1 : -1 }] }}>
+        <Image
+          source={source}
+          style={{ width: '100%', height: '100%' }}
+          contentFit="contain"
+          contentPosition="bottom"
+        />
       </View>
       <Animated.View
         style={{
           position: 'absolute',
-          top: 48,
-          [reverse ? 'right' : 'left']: -14,
-          width: 20,
-          height: 20,
-          borderRadius: 10,
-          backgroundColor: 'rgba(110,110,110,0.6)',
+          bottom: smokeBottom,
+          [reverse ? 'right' : 'left']: smokeOffset,
+          width: smokeSize,
+          height: smokeSize,
+          borderRadius: smokeSize / 2,
+          backgroundColor: 'rgba(190, 190, 195, 0.95)',
           opacity: smokeOpacity,
           transform: [{ scale: smokeScale }],
         }}
@@ -311,9 +386,111 @@ function DrivingCar({
   );
 }
 
+// --- Océan (vagues animées) -------------------------------------------------
+//
+// Remplace city.png/nature.png quand le lieu affiché est en mer (voir services/biome.ts).
+// Chaque "vague" est un polygone SVG dont le bord supérieur suit une sinusoïde, dessiné sur un
+// canevas large d'exactement une longueur d'onde de plus que la largeur visible ; en le faisant
+// défiler de 0 à -wavelength (une période complète) puis en relançant la boucle, le motif se
+// raccorde parfaitement, sans saut visible au redémarrage. Plusieurs vagues superposées (couleur,
+// amplitude, longueur d'onde et vitesse différentes) donnent un effet de profondeur.
+function buildWavePoints(canvasWidth: number, height: number, amplitude: number, wavelength: number, baseY: number) {
+  const step = 12;
+  const points: string[] = [];
+  for (let x = 0; x <= canvasWidth; x += step) {
+    const y = baseY + Math.sin((x / wavelength) * Math.PI * 2) * amplitude;
+    points.push(`${x},${y}`);
+  }
+  points.push(`${canvasWidth},${height}`);
+  points.push(`0,${height}`);
+  return points.join(' ');
+}
+
+function WaveLayer({
+  width,
+  height,
+  color,
+  amplitude,
+  wavelength,
+  baseY,
+  duration,
+  delay = 0,
+  opacity = 1,
+}: {
+  width: number;
+  height: number;
+  color: string;
+  amplitude: number;
+  wavelength: number;
+  baseY: number;
+  duration: number;
+  delay?: number;
+  opacity?: number;
+}) {
+  const progress = useLoopProgress(duration, delay);
+  const canvasWidth = width + wavelength;
+  const points = useMemo(
+    () => buildWavePoints(canvasWidth, height, amplitude, wavelength, baseY),
+    [canvasWidth, height, amplitude, wavelength, baseY]
+  );
+  const translateX = progress.interpolate({ inputRange: [0, 1], outputRange: [0, -wavelength] });
+
+  return (
+    <Animated.View style={{ position: 'absolute', left: 0, top: 0, transform: [{ translateX }] }}>
+      <Svg width={canvasWidth} height={height}>
+        <Polygon points={points} fill={color} opacity={opacity} />
+      </Svg>
+    </Animated.View>
+  );
+}
+
+function OceanWaves({ width, height }: { width: number; height: number }) {
+  return (
+    <View style={{ width, height, overflow: 'hidden', backgroundColor: '#0F4C68' }}>
+      <WaveLayer
+        width={width}
+        height={height}
+        color="#8ED2E0"
+        amplitude={height * 0.05}
+        wavelength={Math.max(80, width * 0.5)}
+        baseY={height * 0.22}
+        duration={7000}
+        opacity={0.75}
+      />
+      <WaveLayer
+        width={width}
+        height={height}
+        color="#4FA8C9"
+        amplitude={height * 0.07}
+        wavelength={Math.max(70, width * 0.38)}
+        baseY={height * 0.4}
+        duration={5000}
+        delay={300}
+        opacity={0.85}
+      />
+      <WaveLayer
+        width={width}
+        height={height}
+        color="#1E6E96"
+        amplitude={height * 0.09}
+        wavelength={Math.max(60, width * 0.3)}
+        baseY={height * 0.58}
+        duration={3600}
+        delay={600}
+      />
+    </View>
+  );
+}
+
 // -------------------------------------------------------------------------
 
-export default function CityScene({ testTime, layers = DEFAULT_CITY_LAYERS }: CitySceneProps) {
+export default function CityScene({
+  testTime,
+  layers = DEFAULT_CITY_LAYERS,
+  intensity = DEFAULT_CITY_INTENSITY,
+  locationOverride,
+  locationTimezoneOffsetMinutes,
+}: CitySceneProps) {
   const [layout, setLayout] = useState({ width: 0, height: 0 });
 
   // Heure affichée au premier plan. Par défaut l'heure réelle, mise à jour chaque minute ;
@@ -336,35 +513,24 @@ export default function CityScene({ testTime, layers = DEFAULT_CITY_LAYERS }: Ci
     return () => clearInterval(id);
   }, [testTime]);
 
+  const { coords: gpsCoords, error: locationError } = useCurrentCoords();
+  const coords = locationOverride ?? gpsCoords;
+
+  // Décor de fond selon le lieu : ville, nature ou océan (voir services/biome.ts). Par défaut
+  // "ville" tant que la position n'est pas encore connue, pour garder le rendu initial habituel.
+  const biome = useMemo(
+    () => (coords ? getBiome(coords.latitude, coords.longitude) : 'ville'),
+    [coords]
+  );
+
   useEffect(() => {
-    let cancelled = false;
-
-    (async () => {
-      try {
-        const { status } = await Location.requestForegroundPermissionsAsync();
-        if (status !== 'granted') {
-          if (!cancelled) setCityName('Position indisponible');
-          return;
-        }
-
-        const position = await Location.getCurrentPositionAsync({});
-        const { latitude, longitude } = position.coords;
-
-        const response = await fetch(
-          `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${latitude}&longitude=${longitude}&localityLanguage=fr`
-        );
-        const data = await response.json();
-        const name = data.city || data.locality || data.principalSubdivision;
-        if (!cancelled) setCityName(name || 'Ville inconnue');
-      } catch {
-        if (!cancelled) setCityName('Ville inconnue');
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    if (!coords) {
+      if (locationError && !locationOverride) setCityName(locationError);
+      return;
+    }
+    // Recherche locale (aucun appel réseau) : voir services/offlineGeocoding.ts.
+    setCityName(findNearestCityName(coords.latitude, coords.longitude));
+  }, [coords, locationError, locationOverride]);
 
   // Quelques horloges partagées (durées variées pour ne pas tout synchroniser) plutôt qu'un
   // minuteur indépendant par particule/goutte — voir le commentaire sur `useLoopProgress`.
@@ -376,27 +542,72 @@ export default function CityScene({ testTime, layers = DEFAULT_CITY_LAYERS }: Ci
   const pm10ClockC = useLoopProgress(60000);
   const rainClockA = useLoopProgress(900);
   const rainClockB = useLoopProgress(1150);
+  const snowClockA = useLoopProgress(2600);
+  const snowClockB = useLoopProgress(3200);
   const pm25Clocks = [pm25ClockA, pm25ClockB, pm25ClockC];
   const pm10Clocks = [pm10ClockA, pm10ClockB, pm10ClockC];
   const rainClocks = [rainClockA, rainClockB];
+  const snowClocks = [snowClockA, snowClockB];
+
+  // Décale `now` sur le fuseau horaire du lieu affiché (si fourni), pour que l'heure, le ciel et
+  // le cycle jour/nuit correspondent à ce lieu plutôt qu'à celui de l'appareil. Continue de défiler
+  // en temps réel puisqu'il ne fait que décaler `now`, qui lui-même tique toutes les 60s.
+  let displayNow = now;
+  if (locationTimezoneOffsetMinutes !== undefined) {
+    const deviceOffsetMinutes = -now.getTimezoneOffset();
+    const diffMs = (locationTimezoneOffsetMinutes - deviceOffsetMinutes) * 60000;
+    displayNow = new Date(now.getTime() + diffMs);
+  }
 
   const { width, height } = layout;
   const cityHeight = width > 0 ? Math.min(width / CITY_ASPECT_RATIO, height) : 0;
-  const timeLabel = now.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+  const timeLabel = displayNow.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
 
   // Tailles responsives : plus grandes proportionnellement sur les petits écrans (mobile).
   const timeFontSize = Math.min(64, Math.max(32, width * 0.11));
   const cityFontSize = Math.min(24, Math.max(16, width * 0.05));
   const cityIconSize = Math.min(20, Math.max(14, width * 0.045));
 
-  const sky = getSkyColors(now);
-  const night = isNight(now);
-  const aqiColor = Colors.aqi[getAQILevel(STATIC_DATA.aqi)];
+  const sky = getSkyColors(displayNow);
+  const night = isNight(displayNow);
+  const aqiColor = Colors.aqi[getAQILevel(intensity.aqi)];
 
-  const pm25Particles = Array.from({ length: 16 });
-  const pm10Particles = Array.from({ length: 8 });
-  const raindrops = Array.from({ length: 14 });
-  const roadY = height - cityHeight * 0.12;
+  // Densité des particules proportionnelle à la concentration réglée (échelles usuelles PM2.5/PM10).
+  const pm25Count = Math.round(Math.min(40, Math.max(4, (intensity.pm25 / 150) * 40)));
+  const pm10Count = Math.round(Math.min(18, Math.max(2, (intensity.pm10 / 200) * 18)));
+  const pm25Particles = Array.from({ length: pm25Count });
+  const pm10Particles = Array.from({ length: pm10Count });
+  const precipitationDrops = Array.from({ length: 14 });
+
+  // Trafic : plus l'intensité est élevée, plus il y a de voitures sur la route (densité, pas
+  // vitesse) et plus la brume au sol (NO2/CO) est marquée.
+  const trafficFactor = Math.min(1, Math.max(0, intensity.traffic / 100));
+  const roadHazeOpacity = 0.12 + trafficFactor * 0.4;
+  const carCount = Math.round(trafficFactor * MAX_CARS);
+  const cars = Array.from({ length: carCount }, (_, i) => ({
+    reverse: i % 2 === 0,
+    source: CAR_IMAGES[i % CAR_IMAGES.length],
+    duration: 7000 + (i % 3) * 1000,
+    delay: i * 1300,
+  }));
+
+  // Ozone : intensifie le halo autour du soleil.
+  const ozoneFactor = Math.min(1, Math.max(0.15, intensity.ozone / 240));
+
+  // Météo : le type choisi détermine nuages/pluie/neige (aucun effet si "ensoleillé").
+  const precipitationVariant: 'rain' | 'snow' | null =
+    intensity.weather === 'rainy' ? 'rain' : intensity.weather === 'snowy' ? 'snow' : null;
+  const precipitationClocks = precipitationVariant === 'snow' ? snowClocks : rainClocks;
+  const showClouds = intensity.weather !== 'sunny';
+
+  // Les roues des voitures reposent sur le tout bas du composant, comme l'image de la ville
+  // (`styles.cityLayer` a déjà `bottom: 0`).
+  const roadY = height;
+
+  // Taille des voitures proportionnelle à la ville (donc au composant), avec un plancher/plafond
+  // pour rester lisible sur petit écran et raisonnable sur grand écran.
+  const carHeight = Math.min(220, Math.max(70, cityHeight * 0.40));
+  const carWidth = carHeight * CAR_ASPECT_RATIO;
 
   return (
     <View style={styles.container} onLayout={onLayout}>
@@ -421,7 +632,7 @@ export default function CityScene({ testTime, layers = DEFAULT_CITY_LAYERS }: Ci
                 <Svg width={160} height={160} style={styles.ozoneHalo}>
                   <Defs>
                     <RadialGradient id="ozone" cx="50%" cy="50%" r="50%">
-                      <Stop offset="0%" stopColor="#FFF3B0" stopOpacity={0.55} />
+                      <Stop offset="0%" stopColor="#FFF3B0" stopOpacity={0.55 * ozoneFactor} />
                       <Stop offset="100%" stopColor="#FFF3B0" stopOpacity={0} />
                     </RadialGradient>
                   </Defs>
@@ -432,7 +643,7 @@ export default function CityScene({ testTime, layers = DEFAULT_CITY_LAYERS }: Ci
             </View>
 
             {/* Nuages / vent */}
-            {layers.weather && (
+            {layers.weather && showClouds && (
               <>
                 <SwayingCloud top={height * 0.16} left={width * 0.06} size={72} color="rgba(255,255,255,0.9)" duration={4200} />
                 <SwayingCloud top={height * 0.3} left={width * 0.42} size={48} color="rgba(255,255,255,0.75)" duration={5000} />
@@ -441,21 +652,30 @@ export default function CityScene({ testTime, layers = DEFAULT_CITY_LAYERS }: Ci
             )}
           </View>
 
-          {/* Image de la ville, toujours calée en bas du container */}
+          {/* Décor de fond, toujours calé en bas du container : ville, nature ou océan (vagues animées) */}
           <View style={[styles.cityLayer, { width, height: cityHeight }]}>
-            <Image source={CityPng} style={{ width, height: cityHeight }} contentFit="contain" />
+            {biome === 'ocean' ? (
+              <OceanWaves width={width} height={cityHeight} />
+            ) : (
+              <Image
+                source={biome === 'nature' ? NaturePng : CityPng}
+                style={{ width, height: cityHeight }}
+                contentFit="contain"
+              />
+            )}
           </View>
 
-          {/* Pluie, au premier plan devant la ville */}
-          {layers.weather && (
+          {/* Pluie ou neige, au premier plan devant la ville */}
+          {layers.weather && precipitationVariant && (
             <View style={StyleSheet.absoluteFill} pointerEvents="none">
-              {raindrops.map((_, i) => (
-                <RainDrop
-                  key={`rain-${i}`}
+              {precipitationDrops.map((_, i) => (
+                <Precipitation
+                  key={`precip-${i}`}
                   left={(scatter(i, 11) / 100) * width}
                   sceneHeight={height}
-                  clock={rainClocks[i % rainClocks.length]}
-                  phase={i / raindrops.length}
+                  clock={precipitationClocks[i % precipitationClocks.length]}
+                  phase={i / precipitationDrops.length}
+                  variant={precipitationVariant}
                 />
               ))}
             </View>
@@ -468,15 +688,25 @@ export default function CityScene({ testTime, layers = DEFAULT_CITY_LAYERS }: Ci
                 <Defs>
                   <LinearGradient id="roadHaze" x1="0" y1="0" x2="0" y2="1">
                     <Stop offset="0" stopColor="#8A7A63" stopOpacity={0} />
-                    <Stop offset="1" stopColor="#8A7A63" stopOpacity={0.35} />
+                    <Stop offset="1" stopColor="#8A7A63" stopOpacity={roadHazeOpacity} />
                   </LinearGradient>
                 </Defs>
                 <Rect x={0} y={0} width={width} height={cityHeight * 0.22} fill="url(#roadHaze)" />
               </Svg>
 
-              <DrivingCar trackWidth={width} top={roadY} duration={7000} delay={0} reverse={false} source={CAR_IMAGES[0]} />
-              <DrivingCar trackWidth={width} top={roadY} duration={9000} delay={1500} reverse={true} source={CAR_IMAGES[1]} />
-              <DrivingCar trackWidth={width} top={roadY} duration={8000} delay={3000} reverse={false} source={CAR_IMAGES[2]} />
+              {cars.map((car, i) => (
+                <DrivingCar
+                  key={i}
+                  trackWidth={width}
+                  top={roadY}
+                  duration={car.duration}
+                  delay={car.delay}
+                  reverse={car.reverse}
+                  source={car.source}
+                  carWidth={carWidth}
+                  carHeight={carHeight}
+                />
+              ))}
             </View>
           )}
 
@@ -485,7 +715,7 @@ export default function CityScene({ testTime, layers = DEFAULT_CITY_LAYERS }: Ci
 
           {/* Filtre de couleur représentant l'indice de qualité de l'air (vert -> rouge -> violet) */}
           {layers.aqi && (
-            <View style={[StyleSheet.absoluteFill, { backgroundColor: aqiColor, opacity: 0.2 }]} pointerEvents="none" />
+            <View style={[StyleSheet.absoluteFill, { backgroundColor: aqiColor, opacity: 0.1 }]} pointerEvents="none" />
           )}
 
           {/* Particules fines PM2.5 / PM10, au-dessus des surcouches pour rester bien visibles */}
@@ -496,7 +726,7 @@ export default function CityScene({ testTime, layers = DEFAULT_CITY_LAYERS }: Ci
                   key={`pm25-${i}`}
                   index={i}
                   size={10 + (i % 3) * 4}
-                  color="rgba(70, 75, 85, 0.85)"
+                  color="rgba(70, 75, 85, 0.4)"
                   sceneWidth={width}
                   sceneHeight={height}
                   clock={pm25Clocks[i % pm25Clocks.length]}
@@ -509,7 +739,7 @@ export default function CityScene({ testTime, layers = DEFAULT_CITY_LAYERS }: Ci
                   key={`pm10-${i}`}
                   index={i + 1000}
                   size={18 + (i % 3) * 6}
-                  color="rgba(150, 110, 70, 0.8)"
+                  color="rgba(150, 110, 70, 0.4)"
                   sceneWidth={width}
                   sceneHeight={height}
                   clock={pm10Clocks[i % pm10Clocks.length]}
@@ -518,33 +748,28 @@ export default function CityScene({ testTime, layers = DEFAULT_CITY_LAYERS }: Ci
               ))}
           </View>
 
-          {/* Badge IQA, premier plan — aligné avec le bloc heure/ville en face */}
-          {layers.aqi && (
-            <View
-              style={[
-                styles.aqiBadge,
-                { backgroundColor: aqiColor, top: height * 0.1 + 12, right: width * 0.06 + 8 },
-              ]}
-              pointerEvents="none"
-            >
-              <Text style={styles.aqiBadgeLabel}>IQA</Text>
-              <Text style={styles.aqiBadgeValueText}>{STATIC_DATA.aqi}</Text>
-            </View>
-          )}
-
-          {/* Premier plan : heure et ville */}
+          {/* Premier plan : heure, ville et IQA dans un même bloc pour qu'ils restent toujours alignés entre eux */}
           <View
             style={[
-              styles.foreground,
-              { top: height * 0.1, left: width * 0.06, marginTop: 12, marginLeft: 8 },
+              styles.foregroundRow,
+              { top: height * 0.1 + 12, left: width * 0.06 + 8, right: width * 0.06 + 8 },
             ]}
             pointerEvents="none"
           >
-            <Text style={[styles.timeText, { fontSize: timeFontSize }]}>{timeLabel}</Text>
-            <View style={styles.cityBadge}>
-              <Ionicons name="location" size={cityIconSize} color="#fff" />
-              <Text style={[styles.cityText, { fontSize: cityFontSize }]} numberOfLines={1}>{cityName}</Text>
+            <View>
+              <Text style={[styles.timeText, { fontSize: timeFontSize }]}>{timeLabel}</Text>
+              <View style={styles.cityBadge}>
+                <Ionicons name="location" size={cityIconSize} color="#fff" />
+                <Text style={[styles.cityText, { fontSize: cityFontSize }]} numberOfLines={1}>{cityName}</Text>
+              </View>
             </View>
+
+            {layers.aqi && (
+              <View style={[styles.aqiBadge, { backgroundColor: aqiColor }]}>
+                <Text style={styles.aqiBadgeLabel}>IQA</Text>
+                <Text style={styles.aqiBadgeValueText}>{Math.round(intensity.aqi)}</Text>
+              </View>
+            )}
           </View>
         </>
       )}
@@ -578,7 +803,6 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(210, 200, 190, 0.22)',
   },
   aqiBadge: {
-    position: 'absolute',
     width: 76,
     alignItems: 'center',
     justifyContent: 'center',
@@ -601,10 +825,11 @@ const styles = StyleSheet.create({
     color: '#fff',
     lineHeight: 34,
   },
-  foreground: {
+  foregroundRow: {
     position: 'absolute',
-    top: 16,
-    left: 16,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
   timeText: {
     fontSize: 34,
