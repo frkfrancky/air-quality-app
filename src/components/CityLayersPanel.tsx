@@ -1,28 +1,93 @@
 import React, { useState } from 'react';
 import { View, Text, Switch, StyleSheet, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { CityLayers } from './CityScene';
+import { CityLayers, CityIntensity, WeatherCondition } from './CityScene';
 import CityMap from './CityMap';
 import { Coords } from '../hooks/useCurrentCoords';
+import { getAQILevel } from '../data/mockData';
 import { Colors, Spacing, BorderRadius, Shadows } from '../theme';
+
+type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
 
 interface CityLayersPanelProps {
   value: CityLayers;
   onChange: (next: CityLayers) => void;
+  /** Valeurs actuelles de chaque paramètre, affichées en chiffres sur chaque carte. */
+  intensity: CityIntensity;
   /** Appelé quand l'utilisateur choisit un lieu sur la carte (pour rendre CityScene dynamique). */
   onSelectLocation?: (coords: Coords) => void;
 }
 
-const ITEMS: { key: keyof CityLayers; label: string }[] = [
-  { key: 'aqi', label: "Indice de la qualité de l'air" },
-  { key: 'pm25', label: 'Particule fine PM2.5' },
-  { key: 'pm10', label: 'Particule fine PM10' },
-  { key: 'traffic', label: 'Pollution automobile' },
-  { key: 'ozone', label: 'Ozone' },
-  { key: 'weather', label: 'Condition météo' },
+const WEATHER_LABELS: Record<WeatherCondition, { label: string; icon: IoniconName }> = {
+  sunny: { label: 'Ensoleillé', icon: 'sunny' },
+  cloudy: { label: 'Nuageux', icon: 'cloud' },
+  rainy: { label: 'Pluvieux', icon: 'rainy' },
+  snowy: { label: 'Neigeux', icon: 'snow' },
+};
+
+interface Item {
+  key: keyof CityLayers;
+  label: string;
+  icon: IoniconName;
+  color: (intensity: CityIntensity) => string;
+  /** Valeur affichée en grand sur la carte. */
+  valueText: (intensity: CityIntensity) => string;
+  /** Remplissage de la jauge (0 à 1) ; `null` pour les paramètres sans échelle numérique (météo). */
+  gauge: (intensity: CityIntensity) => number | null;
+}
+
+const ITEMS: Item[] = [
+  {
+    key: 'aqi',
+    label: "Indice de la qualité de l'air",
+    icon: 'analytics',
+    color: (i) => Colors.aqi[getAQILevel(i.aqi)],
+    valueText: (i) => `${Math.round(i.aqi)}`,
+    gauge: (i) => Math.min(1, i.aqi / 400),
+  },
+  {
+    key: 'pm25',
+    label: 'Particule fine PM2.5',
+    icon: 'cloud',
+    color: () => '#5C6BC0',
+    valueText: (i) => `${Math.round(i.pm25)} µg/m³`,
+    gauge: (i) => Math.min(1, i.pm25 / 150),
+  },
+  {
+    key: 'pm10',
+    label: 'Particule fine PM10',
+    icon: 'cloud-outline',
+    color: () => '#8D6E63',
+    valueText: (i) => `${Math.round(i.pm10)} µg/m³`,
+    gauge: (i) => Math.min(1, i.pm10 / 200),
+  },
+  {
+    key: 'traffic',
+    label: 'Pollution automobile',
+    icon: 'car',
+    color: () => '#E53935',
+    valueText: (i) => `${Math.round(i.traffic)}/100`,
+    gauge: (i) => Math.min(1, i.traffic / 100),
+  },
+  {
+    key: 'ozone',
+    label: 'Ozone',
+    icon: 'sunny',
+    color: () => '#F57F17',
+    valueText: (i) => `${Math.round(i.ozone)} µg/m³`,
+    gauge: (i) => Math.min(1, i.ozone / 240),
+  },
+  {
+    key: 'weather',
+    label: 'Condition météo',
+    icon: 'partly-sunny',
+    color: () => '#1E88E5',
+    valueText: (i) => WEATHER_LABELS[i.weather].label,
+    gauge: () => null,
+  },
 ];
 
-export default function CityLayersPanel({ value, onChange, onSelectLocation }: CityLayersPanelProps) {
+export default function CityLayersPanel({ value, onChange, intensity, onSelectLocation }: CityLayersPanelProps) {
   const [showMap, setShowMap] = useState(false);
 
   const toggle = (key: keyof CityLayers) => {
@@ -32,17 +97,43 @@ export default function CityLayersPanel({ value, onChange, onSelectLocation }: C
   return (
     <View style={styles.wrapper}>
       <View style={styles.grid}>
-        {ITEMS.map((item) => (
-          <View key={item.key} style={styles.card}>
-            <Text style={styles.label}>{item.label}</Text>
-            <Switch
-              value={value[item.key]}
-              onValueChange={() => toggle(item.key)}
-              trackColor={{ false: Colors.border, true: Colors.primaryLight }}
-              thumbColor="#fff"
-            />
-          </View>
-        ))}
+        {ITEMS.map((item) => {
+          const color = item.color(intensity);
+          const gauge = item.gauge(intensity);
+          const icon = item.key === 'weather' ? WEATHER_LABELS[intensity.weather].icon : item.icon;
+          const active = value[item.key];
+
+          return (
+            <View key={item.key} style={[styles.card, !active && styles.cardInactive]}>
+              <View style={styles.cardTop}>
+                <View style={[styles.iconBadge, { backgroundColor: color + '1E' }]}>
+                  <Ionicons name={icon} size={15} color={color} />
+                </View>
+                <Text style={styles.label} numberOfLines={2}>{item.label}</Text>
+              </View>
+
+              <Text style={[styles.valueText, { color }]} numberOfLines={1} adjustsFontSizeToFit>
+                {item.valueText(intensity)}
+              </Text>
+
+              {gauge !== null && (
+                <View style={styles.gaugeTrack}>
+                  <View style={[styles.gaugeFill, { width: `${gauge * 100}%`, backgroundColor: color }]} />
+                </View>
+              )}
+
+              <View style={styles.cardBottom}>
+                <Switch
+                  value={active}
+                  onValueChange={() => toggle(item.key)}
+                  trackColor={{ false: Colors.border, true: Colors.primaryLight }}
+                  thumbColor="#fff"
+                  style={styles.switch}
+                />
+              </View>
+            </View>
+          );
+        })}
       </View>
 
       <TouchableOpacity style={styles.mapButton} onPress={() => setShowMap(true)}>
@@ -73,21 +164,58 @@ const styles = StyleSheet.create({
   card: {
     flexBasis: '30%',
     flexGrow: 1,
-    minWidth: 110,
+    minWidth: 130,
     backgroundColor: Colors.surface,
     borderRadius: BorderRadius.lg,
-    paddingVertical: Spacing.md,
+    paddingVertical: Spacing.sm,
     paddingHorizontal: Spacing.sm,
-    alignItems: 'center',
-    justifyContent: 'space-between',
     ...Shadows.sm,
   },
+  cardInactive: {
+    opacity: 0.55,
+  },
+  cardTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: Spacing.xs,
+  },
+  iconBadge: {
+    width: 24,
+    height: 24,
+    borderRadius: BorderRadius.sm,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   label: {
-    fontSize: 13,
+    flex: 1,
+    fontSize: 11.5,
     fontWeight: '700',
     color: Colors.textSecondary,
-    textAlign: 'center',
-    marginBottom: Spacing.sm,
+    lineHeight: 14,
+  },
+  valueText: {
+    fontSize: 19,
+    fontWeight: '800',
+  },
+  gaugeTrack: {
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: Colors.background,
+    overflow: 'hidden',
+    marginTop: Spacing.xs,
+  },
+  gaugeFill: {
+    height: '100%',
+    borderRadius: 2,
+  },
+  cardBottom: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    marginTop: Spacing.xs,
+  },
+  switch: {
+    transform: [{ scale: 0.8 }],
   },
   mapButton: {
     flexDirection: 'row',

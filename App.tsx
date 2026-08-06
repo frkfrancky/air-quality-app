@@ -54,8 +54,9 @@ export default function App() {
         {/* <Tab.Screen name="Accueil" component={DashboardScreen} /> */}
         {/* <Tab.Screen name="Carte" component={MapScreen} /> */}
         {/* <Tab.Screen name="Statistiques" component={StatsScreen} /> */}
-        <Tab.Screen name="Arduino" component={ArduinoScreen} />
+       
         <Tab.Screen name="Ville" component={CityScreen} />
+        <Tab.Screen name="Arduino" component={ArduinoScreen} />
         <Tab.Screen name="Paramètres" component={SettingsScreen} />
       </Tab.Navigator>
     </NavigationContainer>

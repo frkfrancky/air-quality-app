@@ -16,12 +16,25 @@ import { useCurrentCoords, Coords } from '../hooks/useCurrentCoords';
 import { fetchAirQuality, fetchWeatherCondition } from '../services/openMeteo';
 import { fetchTrafficIntensity as fetchTomTomTraffic, hasTomTomApiKey } from '../services/tomtom';
 import { estimateTrafficIntensity } from '../services/offlineTraffic';
+import { loadDefaultCityLayers } from '../services/preferences';
 
 const DESKTOP_BREAKPOINT = 768;
 
 export default function CityScreen() {
   const [layers, setLayers] = useState<CityLayers>(DEFAULT_CITY_LAYERS);
   const [intensity, setIntensity] = useState<CityIntensity>(DEFAULT_CITY_INTENSITY);
+
+  // Couches affichées à l'ouverture : celles réglées dans Paramètres (mémorisées), sinon les
+  // valeurs par défaut le temps du chargement.
+  useEffect(() => {
+    let cancelled = false;
+    loadDefaultCityLayers().then((saved) => {
+      if (!cancelled) setLayers(saved);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const { width } = useWindowDimensions();
   const isDesktop = width >= DESKTOP_BREAKPOINT;
   const skyTop = getSkyColors(new Date()).top;
@@ -115,7 +128,7 @@ export default function CityScreen() {
 
         <View style={[styles.controlsSection, isDesktop && styles.controlsSectionRow]}>
           <ScrollView style={styles.controlsScroll} contentContainerStyle={styles.controlsScrollContent}>
-            <CityLayersPanel value={layers} onChange={setLayers} onSelectLocation={setSelectedCoords} />
+            <CityLayersPanel value={layers} onChange={setLayers} intensity={intensity} onSelectLocation={setSelectedCoords} />
             {/* <CityIntensityPanel value={intensity} onChange={setIntensity} /> */}
           </ScrollView>
         </View>

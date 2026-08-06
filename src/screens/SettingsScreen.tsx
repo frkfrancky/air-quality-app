@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -11,6 +11,8 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { AQI_LEVELS } from '../data/mockData';
+import { CityLayers } from '../components/CityScene';
+import { loadDefaultCityLayers, saveDefaultCityLayers } from '../services/preferences';
 import { Colors, Spacing, BorderRadius, Shadows, Typography } from '../theme';
 
 interface SettingRowProps {
@@ -48,12 +50,30 @@ function SettingRow({ icon, iconColor = Colors.primary, label, description, valu
   );
 }
 
+// Mêmes couches et libellés que le panneau de la page Ville (CityLayersPanel) : ce réglage ne fait
+// que choisir leur état au moment où cette page s'ouvre, mémorisé pour les prochaines fois.
+const CITY_LAYER_ITEMS: { key: keyof CityLayers; icon: string; iconColor: string; label: string }[] = [
+  { key: 'aqi', icon: 'analytics', iconColor: Colors.primary, label: "Indice de la qualité de l'air" },
+  { key: 'pm25', icon: 'cloud', iconColor: '#5C6BC0', label: 'Particule fine PM2.5' },
+  { key: 'pm10', icon: 'cloud-outline', iconColor: '#8D6E63', label: 'Particule fine PM10' },
+  { key: 'traffic', icon: 'car', iconColor: Colors.textSecondary, label: 'Pollution automobile' },
+  { key: 'ozone', icon: 'sunny', iconColor: '#F57F17', label: 'Ozone' },
+  { key: 'weather', icon: 'rainy', iconColor: '#1E88E5', label: 'Condition météo' },
+];
+
 export default function SettingsScreen() {
-  const [notifications, setNotifications] = useState(true);
-  const [alertsEnabled, setAlertsEnabled] = useState(true);
-  const [autoRefresh, setAutoRefresh] = useState(true);
-  const [darkMode, setDarkMode] = useState(false);
-  const [showThresholds, setShowThresholds] = useState(true);
+  const [cityLayers, setCityLayers] = useState<CityLayers | null>(null);
+
+  useEffect(() => {
+    loadDefaultCityLayers().then(setCityLayers);
+  }, []);
+
+  const toggleCityLayer = (key: keyof CityLayers) => {
+    if (!cityLayers) return;
+    const next = { ...cityLayers, [key]: !cityLayers[key] };
+    setCityLayers(next);
+    saveDefaultCityLayers(next);
+  };
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -63,90 +83,25 @@ export default function SettingsScreen() {
       </View>
 
       <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
-        {/* Notifications */}
+        {/* Ville : couches affichées par défaut */}
         <View style={styles.group}>
-          <Text style={styles.groupTitle}>Notifications</Text>
-          <View style={styles.card}>
-            <SettingRow
-              icon="notifications"
-              iconColor={Colors.primary}
-              label="Notifications push"
-              description="Recevoir des alertes en temps réel"
-              value={notifications}
-              onToggle={setNotifications}
-            />
-            <View style={styles.divider} />
-            <SettingRow
-              icon="warning"
-              iconColor={Colors.aqi.degrade}
-              label="Alertes de dépassement"
-              description="Notifier lors du dépassement de seuils"
-              value={alertsEnabled}
-              onToggle={setAlertsEnabled}
-            />
-          </View>
-        </View>
-
-        {/* Affichage */}
-        <View style={styles.group}>
-          <Text style={styles.groupTitle}>Affichage</Text>
-          <View style={styles.card}>
-            <SettingRow
-              icon="moon"
-              iconColor="#5C6BC0"
-              label="Mode sombre"
-              description="Thème sombre de l'interface"
-              value={darkMode}
-              onToggle={setDarkMode}
-            />
-            <View style={styles.divider} />
-            <SettingRow
-              icon="pulse"
-              iconColor={Colors.secondary}
-              label="Afficher les seuils"
-              description="Montrer les seuils réglementaires"
-              value={showThresholds}
-              onToggle={setShowThresholds}
-            />
-            <View style={styles.divider} />
-            <SettingRow
-              icon="refresh"
-              iconColor={Colors.success}
-              label="Actualisation automatique"
-              description="Rafraîchir les données toutes les 10 min"
-              value={autoRefresh}
-              onToggle={setAutoRefresh}
-            />
-          </View>
-        </View>
-
-        {/* Données */}
-        <View style={styles.group}>
-          <Text style={styles.groupTitle}>Données</Text>
-          <View style={styles.card}>
-            <SettingRow
-              icon="cloud-download"
-              iconColor={Colors.primary}
-              label="Source des données"
-              rightText="Atmo France"
-              onPress={() => {}}
-            />
-            <View style={styles.divider} />
-            <SettingRow
-              icon="time"
-              iconColor={Colors.textSecondary}
-              label="Fréquence de mise à jour"
-              rightText="10 min"
-              onPress={() => {}}
-            />
-            <View style={styles.divider} />
-            <SettingRow
-              icon="trash"
-              iconColor={Colors.error}
-              label="Vider le cache local"
-              onPress={() => {}}
-            />
-          </View>
+          <Text style={styles.groupTitle}>Ville — couches affichées par défaut</Text>
+          {cityLayers && (
+            <View style={styles.card}>
+              {CITY_LAYER_ITEMS.map((item, index) => (
+                <React.Fragment key={item.key}>
+                  <SettingRow
+                    icon={item.icon}
+                    iconColor={item.iconColor}
+                    label={item.label}
+                    value={cityLayers[item.key]}
+                    onToggle={() => toggleCityLayer(item.key)}
+                  />
+                  {index < CITY_LAYER_ITEMS.length - 1 && <View style={styles.divider} />}
+                </React.Fragment>
+              ))}
+            </View>
+          )}
         </View>
 
         {/* Référentiel AQI */}
@@ -169,38 +124,6 @@ export default function SettingsScreen() {
               </React.Fragment>
             ))}
           </View>
-        </View>
-
-        {/* À propos */}
-        <View style={styles.group}>
-          <Text style={styles.groupTitle}>À propos</Text>
-          <View style={styles.card}>
-            <SettingRow
-              icon="information-circle"
-              iconColor={Colors.secondary}
-              label="Version de l'application"
-              rightText="1.0.0"
-            />
-            <View style={styles.divider} />
-            <SettingRow
-              icon="document-text"
-              iconColor={Colors.textSecondary}
-              label="Mentions légales"
-              onPress={() => {}}
-            />
-            <View style={styles.divider} />
-            <SettingRow
-              icon="shield-checkmark"
-              iconColor={Colors.success}
-              label="Politique de confidentialité"
-              onPress={() => {}}
-            />
-          </View>
-        </View>
-
-        <View style={styles.footer}>
-          <Text style={styles.footerText}>..</Text>
-          <Text style={styles.footerText}>..</Text>
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -314,14 +237,5 @@ const styles = StyleSheet.create({
   aqiDesc: {
     ...Typography.bodySmall,
     lineHeight: 16,
-  },
-  footer: {
-    alignItems: 'center',
-    paddingVertical: Spacing.md,
-  },
-  footerText: {
-    fontSize: 11,
-    color: Colors.textLight,
-    textAlign: 'center',
   },
 });
